@@ -1,0 +1,27 @@
+# === Gradle ===
+/.gradle/
+/build/
+!gradle/wrapper/gradle-wrapper.jar
+
+# 부트스트랩용 임시 Gradle 배포판(대용량) — 커밋 금지
+/tools/gradle-dist/
+
+# === MediaMTX ===
+# 바이너리는 커밋하지 않음(설치 스크립트로 재획득). 설정(mediamtx.yml)만 추적.
+/tools/mediamtx/*
+!/tools/mediamtx/mediamtx.yml
+
+# === IntelliJ / IDE ===
+# 대부분의 .idea 는 무시하되, 팀 공유용 플러그인 선언은 추적.
+/.idea/*
+!/.idea/externalDependencies.xml
+*.iml
+/out/
+
+# === Claude 로컬 설정 ===
+.claude/settings.local.json
+
+# === OS / 기타 ===
+*.log
+.DS_Store
+Thumbs.db
