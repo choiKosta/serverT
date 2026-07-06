@@ -30,6 +30,8 @@ public class FfmpegStreamPublisher implements StreamPublisher {
     private volatile String device;
     private volatile Process process;
     private volatile String lastError;
+    // 입력에 해상도/프레임레이트 강제가 실패하면 true 로 전환 → 입력 강제를 풀고 출력에서 스케일링.
+    private volatile boolean useOutputScaling = false;
 
     public FfmpegStreamPublisher(
             @Value("${camera.ffmpeg:ffmpeg}") String ffmpeg,
@@ -52,8 +54,9 @@ public class FfmpegStreamPublisher implements StreamPublisher {
             return;
         }
         List<String> cmd = buildCommand(params);
-        log.info("[STREAM] start: device=\"{}\" params={}x{}@{} target={}",
-                device, params.width(), params.height(), params.frameRate(), rtspTarget);
+        log.info("[STREAM] start: device=\"{}\" params={}x{}@{} mode={} target={}",
+                device, params.width(), params.height(), params.frameRate(),
+                useOutputScaling ? "output-scale" : "input-native", rtspTarget);
         try {
             ProcessBuilder pb = new ProcessBuilder(cmd).redirectErrorStream(true);
             this.process = pb.start();
@@ -96,6 +99,7 @@ public class FfmpegStreamPublisher implements StreamPublisher {
     @Override
     public void selectDevice(String device) {
         this.device = device;
+        this.useOutputScaling = false; // 새 카메라는 우선 네이티브 입력으로 시도
         log.info("[STREAM] camera selected: device=\"{}\"", device);
     }
 
@@ -104,8 +108,13 @@ public class FfmpegStreamPublisher implements StreamPublisher {
         return device;
     }
 
-    /** ffmpeg dshow 캡처 → libx264 zerolatency → RTSP(TCP) 게시 커맨드. */
+    /**
+     * ffmpeg dshow 캡처 → libx264 zerolatency → RTSP(TCP) 게시 커맨드.
+     * <p>기본은 입력에 해상도/프레임레이트를 강제(카메라 네이티브 지원 시 최적). 미지원 카메라에서
+     * 실패하면 {@code useOutputScaling}=true 로 전환되어, 입력 강제를 빼고 출력에서 scale/fps 를 맞춘다.
+     */
     private List<String> buildCommand(VideoParams params) {
+        String size = params.width() + "x" + params.height();
         List<String> cmd = new ArrayList<>();
         cmd.add(ffmpeg);
         cmd.add("-hide_banner");
@@ -113,12 +122,22 @@ public class FfmpegStreamPublisher implements StreamPublisher {
         cmd.add("dshow");
         cmd.add("-rtbufsize");
         cmd.add("100M");
-        cmd.add("-framerate");
-        cmd.add(String.valueOf(params.frameRate()));
-        cmd.add("-video_size");
-        cmd.add(params.width() + "x" + params.height());
+        if (!useOutputScaling) {
+            // 입력 네이티브 강제
+            cmd.add("-framerate");
+            cmd.add(String.valueOf(params.frameRate()));
+            cmd.add("-video_size");
+            cmd.add(size);
+        }
         cmd.add("-i");
         cmd.add("video=" + device);
+        if (useOutputScaling) {
+            // 카메라 네이티브 입력을 출력에서 원하는 해상도/프레임레이트로 변환
+            cmd.add("-vf");
+            cmd.add("scale=" + params.width() + ":" + params.height());
+            cmd.add("-r");
+            cmd.add(String.valueOf(params.frameRate()));
+        }
         cmd.add("-c:v");
         cmd.add("libx264");
         cmd.add("-preset");
@@ -140,6 +159,12 @@ public class FfmpegStreamPublisher implements StreamPublisher {
                     new InputStreamReader(p.getInputStream(), StandardCharsets.UTF_8))) {
                 String line;
                 while ((line = r.readLine()) != null) {
+                    // 입력 열기 실패(해상도/프레임레이트 미지원 등) → 다음 재시도부터 출력 스케일링으로 전환
+                    if (!useOutputScaling &&
+                            (line.contains("Could not set video options") || line.contains("Error opening input"))) {
+                        useOutputScaling = true;
+                        log.warn("[STREAM] input format not supported by device — falling back to output scaling on next retry");
+                    }
                     if (line.toLowerCase().contains("error") || line.contains("Could not")) {
                         lastError = line;
                         log.warn("[STREAM][ffmpeg] {}", line);
